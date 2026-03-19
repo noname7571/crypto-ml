@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import pickle
 from pathlib import Path
 from typing import Literal
 
@@ -47,6 +48,32 @@ from src.models.xgboost_model import XGBoostPricePredictor
 # ---------------------------------------------------------------------------
 # Pipeline helpers
 # ---------------------------------------------------------------------------
+
+def save_serving_bundle(
+    *,
+    model: object,
+    feature_names: list[str],
+    feature_scaler: MinMaxScaler,
+    target_scaler: MinMaxScaler,
+    seq_len: int,
+    model_type: str,
+    output_path: Path = Path("artifacts/model_bundle.pkl"),
+) -> Path:
+    """Persist a single file payload consumed by the FastAPI app loader."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "model": model,
+        "feature_names": feature_names,
+        "feature_scaler": feature_scaler,
+        "target_scaler": target_scaler,
+        "seq_len": seq_len,
+        "metadata": {
+            "model_type": model_type,
+        },
+    }
+    with output_path.open("wb") as fh:
+        pickle.dump(payload, fh)
+    return output_path
 
 def load_data(data_path: Path | None, symbol: str, interval: str) -> pd.DataFrame:
     """Load or generate OHLCV data."""
@@ -111,6 +138,7 @@ def scale_features(
 def run_xgboost(
     train_val_test: tuple,
     feature_cols: list[str],
+    feature_scaler: MinMaxScaler,
     target_scaler: MinMaxScaler,
     params: dict,
     experiment_name: str,
@@ -140,12 +168,23 @@ def run_xgboost(
         logger.info(f"Top-5 features: {top5}")
 
         mlflow.sklearn.log_model(model, artifact_path="xgboost_model")
+        bundle_path = save_serving_bundle(
+            model=model,
+            feature_names=feature_cols,
+            feature_scaler=feature_scaler,
+            target_scaler=target_scaler,
+            seq_len=1,
+            model_type="xgboost",
+        )
+        mlflow.log_artifact(str(bundle_path), artifact_path="serving")
+        logger.info(f"Serving bundle saved: {bundle_path}")
         logger.info(f"XGBoost run logged — run_id={run.info.run_id}")
 
 
 def run_lstm(
     train_val_test: tuple,
     feature_cols: list[str],
+    feature_scaler: MinMaxScaler,
     target_scaler: MinMaxScaler,
     params: dict,
     seq_len: int,
@@ -204,6 +243,16 @@ def run_lstm(
         mlflow.log_metrics({**metrics, "directional_accuracy": da})
 
         mlflow.pytorch.log_model(model, artifact_path="lstm_model")
+        bundle_path = save_serving_bundle(
+            model=model,
+            feature_names=feature_cols,
+            feature_scaler=feature_scaler,
+            target_scaler=target_scaler,
+            seq_len=seq_len,
+            model_type="lstm",
+        )
+        mlflow.log_artifact(str(bundle_path), artifact_path="serving")
+        logger.info(f"Serving bundle saved: {bundle_path}")
         logger.info(f"LSTM run logged — run_id={run.info.run_id}")
 
 
@@ -250,7 +299,14 @@ def train(
             "subsample": 0.8,
             "colsample_bytree": 0.8,
         }
-        run_xgboost(train_val_test, feature_cols, tgt_scaler, params, experiment_name)
+        run_xgboost(
+            train_val_test,
+            feature_cols,
+            feat_scaler,
+            tgt_scaler,
+            params,
+            experiment_name,
+        )
 
     elif model_type == "lstm":
         params = {
@@ -261,7 +317,15 @@ def train(
             "lr": 1e-3,
             "batch_size": 64,
         }
-        run_lstm(train_val_test, feature_cols, tgt_scaler, params, seq_len, device)
+        run_lstm(
+            train_val_test,
+            feature_cols,
+            feat_scaler,
+            tgt_scaler,
+            params,
+            seq_len,
+            device,
+        )
 
     else:
         raise ValueError(f"Unknown model_type: {model_type!r}. Choose 'xgboost' or 'lstm'.")
