@@ -109,7 +109,8 @@ To load a custom bundle path instead:
 MODEL_PATH=/absolute/path/to/model_bundle.pkl uvicorn src.api.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Open http://localhost:8000/ for a simple service status response.
+Open http://localhost:8000/ for a simple HTML service page.
+For JSON status use http://localhost:8000/status.
 
 API docs at **http://localhost:8000/docs**
 
@@ -119,6 +120,22 @@ Example prediction request:
 curl -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
   -d '{"features": [29500.0, 29600.0, ...]}'
+```
+
+If your model has `F` features, requests to `/predict` and `/predict/batch`
+must send exactly `F` values per instance; otherwise API returns HTTP 422.
+
+### 5b. One-command train + serve
+
+```bash
+chmod +x scripts/train_and_serve.sh
+./scripts/train_and_serve.sh
+```
+
+Optional env vars:
+
+```bash
+MODEL=lstm DATA_PATH=data/raw/BTCUSDT_1h.parquet HOST=0.0.0.0 PORT=8000 ./scripts/train_and_serve.sh
 ```
 
 ### 6. Run with Docker

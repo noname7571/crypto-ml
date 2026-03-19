@@ -2,7 +2,8 @@
 
 Endpoints
 ---------
-GET  /                — basic service landing response
+GET  /                — simple HTML landing page
+GET  /status          — JSON service status
 GET  /health          — liveness probe
 GET  /info            — model metadata
 POST /predict         — single-step price prediction
@@ -22,6 +23,7 @@ from typing import AsyncGenerator, List, Optional
 import numpy as np
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -86,6 +88,7 @@ class RootResponse(BaseModel):
     service: str
     docs: str
     health: str
+    status: str
     model_loaded: bool
 
 
@@ -190,7 +193,7 @@ def _run_prediction(features_2d: np.ndarray) -> np.ndarray:
         seq_len = _state["seq_len"]
         if X.shape[0] < seq_len:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"LSTM requires at least {seq_len} feature rows; got {X.shape[0]}.",
             )
         # Use the last seq_len rows
@@ -210,17 +213,94 @@ def _run_prediction(features_2d: np.ndarray) -> np.ndarray:
     return pred
 
 
+def _validate_feature_vector_length(features_2d: np.ndarray) -> None:
+    """Validate feature width against model metadata when available."""
+    expected = len(_state["feature_names"])
+    if expected <= 0:
+        return
+
+    got = int(features_2d.shape[1])
+    if got != expected:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Expected {expected} features, got {got}.",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
-@app.get("/", response_model=RootResponse)
-def root() -> RootResponse:
-    """Basic landing endpoint for browser checks."""
+@app.get("/", response_class=HTMLResponse)
+def root() -> str:
+    """Simple browser-friendly landing page."""
+    model_loaded = "yes" if _state["model"] is not None else "no"
+    return f"""
+<!doctype html>
+<html lang=\"en\">
+    <head>
+        <meta charset=\"utf-8\" />
+        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+        <title>crypto-ml API</title>
+        <style>
+            body {{
+                margin: 0;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                background: linear-gradient(140deg, #f2f8ff 0%, #e8f4ef 100%);
+                color: #17202a;
+            }}
+            .wrap {{
+                max-width: 760px;
+                margin: 48px auto;
+                padding: 24px;
+            }}
+            .card {{
+                background: #ffffff;
+                border: 1px solid #d6e2ee;
+                border-radius: 14px;
+                padding: 24px;
+                box-shadow: 0 10px 24px rgba(8, 38, 66, 0.08);
+            }}
+            h1 {{ margin: 0 0 6px; }}
+            p {{ margin: 8px 0; line-height: 1.5; }}
+            code {{
+                background: #f6f8fa;
+                border: 1px solid #e5ebf1;
+                border-radius: 6px;
+                padding: 2px 6px;
+            }}
+            ul {{ padding-left: 20px; }}
+            a {{ color: #0b5cab; text-decoration: none; }}
+            a:hover {{ text-decoration: underline; }}
+        </style>
+    </head>
+    <body>
+        <div class=\"wrap\">
+            <div class=\"card\">
+                <h1>crypto-ml API</h1>
+                <p>Service is running. Model loaded: <strong>{model_loaded}</strong></p>
+                <ul>
+                    <li><a href=\"/docs\">Open API Docs</a></li>
+                    <li><a href=\"/health\">Health JSON</a></li>
+                    <li><a href=\"/status\">Status JSON</a></li>
+                    <li><a href=\"/info\">Model Info JSON</a></li>
+                </ul>
+                <p>Use <code>POST /predict</code> and <code>POST /predict/batch</code> for inference.</p>
+            </div>
+        </div>
+    </body>
+</html>
+""".strip()
+
+
+@app.get("/status", response_model=RootResponse)
+def service_status() -> RootResponse:
+    """JSON status endpoint for quick service checks."""
     return RootResponse(
         service="crypto-ml API",
         docs="/docs",
         health="/health",
+        status="/status",
         model_loaded=_state["model"] is not None,
     )
 
@@ -248,6 +328,7 @@ def info() -> InfoResponse:
 def predict(request: PredictRequest) -> PredictResponse:
     """Predict the next-period close price from a single feature vector."""
     features_2d = np.array(request.features, dtype=float).reshape(1, -1)
+    _validate_feature_vector_length(features_2d)
     pred = _run_prediction(features_2d)
     return PredictResponse(
         prediction=float(pred[0]),
@@ -258,7 +339,18 @@ def predict(request: PredictRequest) -> PredictResponse:
 @app.post("/predict/batch", response_model=BatchPredictResponse)
 def predict_batch(request: BatchPredictRequest) -> BatchPredictResponse:
     """Predict next-period close prices for a batch of feature vectors."""
+    if not request.instances:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="instances must contain at least one feature vector.",
+        )
     features_2d = np.array(request.instances, dtype=float)
+    if features_2d.ndim != 2:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="instances must be a 2D array of shape (N, F).",
+        )
+    _validate_feature_vector_length(features_2d)
     pred = _run_prediction(features_2d)
     return BatchPredictResponse(
         predictions=pred.tolist(),

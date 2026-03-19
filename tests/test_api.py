@@ -59,10 +59,19 @@ def test_info_endpoint(client):
 def test_root_endpoint(client):
     resp = client.get("/")
     assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    assert "crypto-ml API" in resp.text
+    assert "/docs" in resp.text
+
+
+def test_status_endpoint(client):
+    resp = client.get("/status")
+    assert resp.status_code == 200
     data = resp.json()
     assert data["service"] == "crypto-ml API"
     assert data["docs"] == "/docs"
     assert data["health"] == "/health"
+    assert data["status"] == "/status"
     assert data["model_loaded"] is False
 
 
@@ -117,6 +126,50 @@ def test_predict_batch_with_mock_model(client):
     preds = resp.json()["predictions"]
     assert len(preds) == 3
     assert all(p == pytest.approx(99.0) for p in preds)
+
+
+def test_predict_wrong_feature_count_returns_422(client):
+    class MockModel:
+        def predict(self, X):
+            return [1.0 for _ in range(len(X))]
+
+    _state["model"] = MockModel()
+    _state["model_type"] = "xgboost"
+    _state["feature_names"] = ["f1", "f2", "f3"]
+
+    resp = client.post("/predict", json={"features": [1.0, 2.0]})
+    assert resp.status_code == 422
+    assert "Expected 3 features, got 2." in resp.json()["detail"]
+
+
+def test_predict_batch_wrong_feature_count_returns_422(client):
+    class MockModel:
+        def predict(self, X):
+            return [1.0 for _ in range(len(X))]
+
+    _state["model"] = MockModel()
+    _state["model_type"] = "xgboost"
+    _state["feature_names"] = ["f1", "f2"]
+
+    resp = client.post(
+        "/predict/batch",
+        json={"instances": [[1.0], [2.0]]},
+    )
+    assert resp.status_code == 422
+    assert "Expected 2 features, got 1." in resp.json()["detail"]
+
+
+def test_predict_batch_empty_instances_returns_422(client):
+    class MockModel:
+        def predict(self, X):
+            return [1.0 for _ in range(len(X))]
+
+    _state["model"] = MockModel()
+    _state["model_type"] = "xgboost"
+
+    resp = client.post("/predict/batch", json={"instances": []})
+    assert resp.status_code == 422
+    assert "at least one feature vector" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio
