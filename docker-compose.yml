@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  # -----------------------------------------------------------------------
+  # Prediction API
+  # -----------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: crypto-ml-api:latest
+    container_name: crypto-ml-api
+    ports:
+      - "8000:8000"
+    environment:
+      MODEL_PATH: ${MODEL_PATH:-}
+      MODEL_TYPE: ${MODEL_TYPE:-xgboost}
+      PORT: "8000"
+    volumes:
+      # Mount trained models directory into the container
+      - ./models:/app/models:ro
+    restart: unless-stopped
+
+  # -----------------------------------------------------------------------
+  # MLflow tracking server
+  # -----------------------------------------------------------------------
+  mlflow:
+    image: python:3.11-slim
+    container_name: crypto-ml-mlflow
+    working_dir: /mlflow
+    command: >
+      sh -c "pip install --quiet mlflow &&
+             mlflow server
+               --backend-store-uri /mlflow/mlruns
+               --default-artifact-root /mlflow/mlruns
+               --host 0.0.0.0
+               --port 5000"
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlruns:/mlflow/mlruns
+    restart: unless-stopped
