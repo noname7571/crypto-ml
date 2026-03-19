@@ -111,6 +111,7 @@ MODEL_PATH=/absolute/path/to/model_bundle.pkl uvicorn src.api.app:app --host 0.0
 
 Open http://localhost:8000/ for a simple HTML service page.
 For JSON status use http://localhost:8000/status.
+For feature preflight use http://localhost:8000/feature-spec.
 
 API docs at **http://localhost:8000/docs**
 
@@ -124,6 +125,19 @@ curl -X POST http://localhost:8000/predict \
 
 If your model has `F` features, requests to `/predict` and `/predict/batch`
 must send exactly `F` values per instance; otherwise API returns HTTP 422.
+The homepage includes a small prediction form that reads `/feature-spec`.
+
+Error responses use a stable shape:
+
+```json
+{
+  "error": {
+    "code": "INVALID_FEATURE_COUNT",
+    "message": "Expected 55 features, got 3.",
+    "details": null
+  }
+}
+```
 
 ### 5b. One-command train + serve
 

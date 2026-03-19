@@ -4,6 +4,7 @@ Endpoints
 ---------
 GET  /                — simple HTML landing page
 GET  /status          — JSON service status
+GET  /feature-spec    — expected feature schema for clients
 GET  /health          — liveness probe
 GET  /info            — model metadata
 POST /predict         — single-step price prediction
@@ -18,12 +19,13 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, List, Optional
+from typing import Any, AsyncGenerator, List, Optional
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -92,6 +94,23 @@ class RootResponse(BaseModel):
     model_loaded: bool
 
 
+class FeatureSpecResponse(BaseModel):
+    model_loaded: bool
+    model_type: Optional[str]
+    expected_feature_count: int
+    feature_names: List[str]
+
+
+class ApiError(BaseModel):
+    code: str
+    message: str
+    details: Any | None = None
+
+
+class ErrorResponse(BaseModel):
+    error: ApiError
+
+
 # ---------------------------------------------------------------------------
 # Lifespan (startup / shutdown)
 # ---------------------------------------------------------------------------
@@ -135,6 +154,53 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------------------------------------------------------------------------
+# Exception handling (stable error schema)
+# ---------------------------------------------------------------------------
+
+def _http_error_code(exc: HTTPException) -> str:
+    detail = str(exc.detail)
+    if exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE and detail.startswith("No model is loaded"):
+        return "MODEL_NOT_LOADED"
+    if detail.startswith("Expected") and "features" in detail:
+        return "INVALID_FEATURE_COUNT"
+    if detail.startswith("instances must contain at least one"):
+        return "EMPTY_BATCH"
+    if detail.startswith("instances must be a 2D array"):
+        return "INVALID_BATCH_SHAPE"
+    if detail.startswith("LSTM requires at least"):
+        return "INSUFFICIENT_SEQUENCE_LENGTH"
+    return "HTTP_ERROR"
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
+    message = str(exc.detail)
+    payload = ErrorResponse(
+        error=ApiError(
+            code=_http_error_code(exc),
+            message=message,
+            details=exc.detail if not isinstance(exc.detail, str) else None,
+        )
+    )
+    return JSONResponse(status_code=exc.status_code, content=payload.model_dump())
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    payload = ErrorResponse(
+        error=ApiError(
+            code="VALIDATION_ERROR",
+            message="Request validation failed.",
+            details=exc.errors(),
+        )
+    )
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content=payload.model_dump(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -235,62 +301,158 @@ def _validate_feature_vector_length(features_2d: np.ndarray) -> None:
 def root() -> str:
     """Simple browser-friendly landing page."""
     model_loaded = "yes" if _state["model"] is not None else "no"
-    return f"""
+    html = """
 <!doctype html>
-<html lang=\"en\">
+<html lang="en">
     <head>
-        <meta charset=\"utf-8\" />
-        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>crypto-ml API</title>
         <style>
-            body {{
+            body {
                 margin: 0;
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
                 background: linear-gradient(140deg, #f2f8ff 0%, #e8f4ef 100%);
                 color: #17202a;
-            }}
-            .wrap {{
+            }
+            .wrap {
                 max-width: 760px;
                 margin: 48px auto;
                 padding: 24px;
-            }}
-            .card {{
+            }
+            .card {
                 background: #ffffff;
                 border: 1px solid #d6e2ee;
                 border-radius: 14px;
                 padding: 24px;
                 box-shadow: 0 10px 24px rgba(8, 38, 66, 0.08);
-            }}
-            h1 {{ margin: 0 0 6px; }}
-            p {{ margin: 8px 0; line-height: 1.5; }}
-            code {{
+            }
+            h1 { margin: 0 0 6px; }
+            p { margin: 8px 0; line-height: 1.5; }
+            code {
                 background: #f6f8fa;
                 border: 1px solid #e5ebf1;
                 border-radius: 6px;
                 padding: 2px 6px;
-            }}
-            ul {{ padding-left: 20px; }}
-            a {{ color: #0b5cab; text-decoration: none; }}
-            a:hover {{ text-decoration: underline; }}
+            }
+            ul { padding-left: 20px; }
+            .panel {
+                margin-top: 18px;
+                padding: 16px;
+                border: 1px solid #d6e2ee;
+                border-radius: 10px;
+                background: #f9fcff;
+            }
+            textarea {
+                width: 100%;
+                min-height: 90px;
+                border: 1px solid #c4d4e4;
+                border-radius: 8px;
+                padding: 10px;
+                box-sizing: border-box;
+                font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                font-size: 13px;
+            }
+            button {
+                margin-top: 10px;
+                border: 0;
+                border-radius: 8px;
+                padding: 9px 12px;
+                background: #0b5cab;
+                color: #fff;
+                cursor: pointer;
+            }
+            button:hover { background: #0a4f95; }
+            .hint { color: #4c5f73; font-size: 14px; }
+            pre {
+                background: #0d1620;
+                color: #d7e8f8;
+                padding: 12px;
+                border-radius: 8px;
+                overflow: auto;
+                font-size: 12px;
+            }
+            a { color: #0b5cab; text-decoration: none; }
+            a:hover { text-decoration: underline; }
         </style>
     </head>
     <body>
-        <div class=\"wrap\">
-            <div class=\"card\">
+        <div class="wrap">
+            <div class="card">
                 <h1>crypto-ml API</h1>
-                <p>Service is running. Model loaded: <strong>{model_loaded}</strong></p>
+                <p>Service is running. Model loaded: <strong>__MODEL_LOADED__</strong></p>
                 <ul>
-                    <li><a href=\"/docs\">Open API Docs</a></li>
-                    <li><a href=\"/health\">Health JSON</a></li>
-                    <li><a href=\"/status\">Status JSON</a></li>
-                    <li><a href=\"/info\">Model Info JSON</a></li>
+                    <li><a href="/docs">Open API Docs</a></li>
+                    <li><a href="/health">Health JSON</a></li>
+                    <li><a href="/status">Status JSON</a></li>
+                    <li><a href="/feature-spec">Feature Spec JSON</a></li>
+                    <li><a href="/info">Model Info JSON</a></li>
                 </ul>
                 <p>Use <code>POST /predict</code> and <code>POST /predict/batch</code> for inference.</p>
+                <div class="panel">
+                    <h3>Try a prediction</h3>
+                    <p class="hint">Enter comma-separated numeric features (in model feature order), then click Predict.</p>
+                    <p class="hint" id="featureMeta">Loading expected feature count...</p>
+                    <textarea id="featureInput" placeholder="0.1, 0.2, 0.3"></textarea>
+                    <button id="predictBtn">Predict</button>
+                    <pre id="resultBox">No request sent yet.</pre>
+                </div>
             </div>
         </div>
+        <script>
+            const featureMeta = document.getElementById("featureMeta");
+            const featureInput = document.getElementById("featureInput");
+            const resultBox = document.getElementById("resultBox");
+            const predictBtn = document.getElementById("predictBtn");
+
+            async function loadFeatureSpec() {
+                try {
+                    const res = await fetch('/feature-spec');
+                    const data = await res.json();
+                    if (res.ok) {
+                        featureMeta.textContent = `Expected features: ${data.expected_feature_count} (model loaded: ${data.model_loaded})`;
+                        if (data.expected_feature_count > 0 && !featureInput.value.trim()) {
+                            featureInput.value = Array(data.expected_feature_count).fill(0).join(', ');
+                        }
+                    } else {
+                        featureMeta.textContent = 'Could not load feature spec.';
+                    }
+                } catch (_) {
+                    featureMeta.textContent = 'Could not load feature spec.';
+                }
+            }
+
+            predictBtn.addEventListener('click', async () => {
+                try {
+                    const features = featureInput.value
+                        .split(',')
+                        .map((x) => x.trim())
+                        .filter((x) => x.length > 0)
+                        .map((x) => Number(x));
+
+                    if (features.some((x) => Number.isNaN(x))) {
+                        resultBox.textContent = 'All feature values must be numeric.';
+                        return;
+                    }
+
+                    const res = await fetch('/predict', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ features })
+                    });
+                    const data = await res.json();
+                    resultBox.textContent = JSON.stringify(data, null, 2);
+                } catch (err) {
+                    resultBox.textContent = String(err);
+                }
+            });
+
+            loadFeatureSpec();
+        </script>
     </body>
 </html>
 """.strip()
+    return html.replace("__MODEL_LOADED__", model_loaded)
 
 
 @app.get("/status", response_model=RootResponse)
@@ -302,6 +464,17 @@ def service_status() -> RootResponse:
         health="/health",
         status="/status",
         model_loaded=_state["model"] is not None,
+    )
+
+
+@app.get("/feature-spec", response_model=FeatureSpecResponse)
+def feature_spec() -> FeatureSpecResponse:
+    """Return expected feature schema for clients before prediction calls."""
+    return FeatureSpecResponse(
+        model_loaded=_state["model"] is not None,
+        model_type=_state["model_type"],
+        expected_feature_count=len(_state["feature_names"]),
+        feature_names=_state["feature_names"],
     )
 
 @app.get("/health", response_model=HealthResponse)

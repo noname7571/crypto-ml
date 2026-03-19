@@ -56,6 +56,16 @@ def test_info_endpoint(client):
     assert "seq_len" in data
 
 
+def test_feature_spec_endpoint(client):
+    resp = client.get("/feature-spec")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["model_loaded"] is False
+    assert data["model_type"] is None
+    assert data["expected_feature_count"] == 0
+    assert data["feature_names"] == []
+
+
 def test_root_endpoint(client):
     resp = client.get("/")
     assert resp.status_code == 200
@@ -78,6 +88,9 @@ def test_status_endpoint(client):
 def test_predict_no_model_returns_503(client):
     resp = client.post("/predict", json={"features": [1.0, 2.0, 3.0]})
     assert resp.status_code == 503
+    data = resp.json()
+    assert data["error"]["code"] == "MODEL_NOT_LOADED"
+    assert "No model is loaded" in data["error"]["message"]
 
 
 def test_predict_batch_no_model_returns_503(client):
@@ -86,6 +99,8 @@ def test_predict_batch_no_model_returns_503(client):
         json={"instances": [[1.0, 2.0], [3.0, 4.0]]},
     )
     assert resp.status_code == 503
+    data = resp.json()
+    assert data["error"]["code"] == "MODEL_NOT_LOADED"
 
 
 def test_predict_with_mock_model(client):
@@ -139,7 +154,9 @@ def test_predict_wrong_feature_count_returns_422(client):
 
     resp = client.post("/predict", json={"features": [1.0, 2.0]})
     assert resp.status_code == 422
-    assert "Expected 3 features, got 2." in resp.json()["detail"]
+    data = resp.json()
+    assert data["error"]["code"] == "INVALID_FEATURE_COUNT"
+    assert "Expected 3 features, got 2." in data["error"]["message"]
 
 
 def test_predict_batch_wrong_feature_count_returns_422(client):
@@ -156,7 +173,9 @@ def test_predict_batch_wrong_feature_count_returns_422(client):
         json={"instances": [[1.0], [2.0]]},
     )
     assert resp.status_code == 422
-    assert "Expected 2 features, got 1." in resp.json()["detail"]
+    data = resp.json()
+    assert data["error"]["code"] == "INVALID_FEATURE_COUNT"
+    assert "Expected 2 features, got 1." in data["error"]["message"]
 
 
 def test_predict_batch_empty_instances_returns_422(client):
@@ -169,7 +188,18 @@ def test_predict_batch_empty_instances_returns_422(client):
 
     resp = client.post("/predict/batch", json={"instances": []})
     assert resp.status_code == 422
-    assert "at least one feature vector" in resp.json()["detail"]
+    data = resp.json()
+    assert data["error"]["code"] == "EMPTY_BATCH"
+    assert "at least one feature vector" in data["error"]["message"]
+
+
+def test_request_validation_error_uses_stable_schema(client):
+    resp = client.post("/predict", json={"features": "not-a-list"})
+    assert resp.status_code == 422
+    data = resp.json()
+    assert data["error"]["code"] == "VALIDATION_ERROR"
+    assert data["error"]["message"] == "Request validation failed."
+    assert isinstance(data["error"]["details"], list)
 
 
 @pytest.mark.asyncio
