@@ -2,6 +2,7 @@
 
 Endpoints
 ---------
+GET  /                — basic service landing response
 GET  /health          — liveness probe
 GET  /info            — model metadata
 POST /predict         — single-step price prediction
@@ -81,6 +82,13 @@ class InfoResponse(BaseModel):
     metadata: dict
 
 
+class RootResponse(BaseModel):
+    service: str
+    docs: str
+    health: str
+    model_loaded: bool
+
+
 # ---------------------------------------------------------------------------
 # Lifespan (startup / shutdown)
 # ---------------------------------------------------------------------------
@@ -89,12 +97,19 @@ class InfoResponse(BaseModel):
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # type: ignore[type-arg]
     """Attempt to load a model from MODEL_PATH env var on startup."""
     model_path = os.getenv("MODEL_PATH", "")
+    default_model_path = os.getenv("DEFAULT_MODEL_PATH", "artifacts/model_bundle.pkl")
     model_type = os.getenv("MODEL_TYPE", "xgboost")
     if model_path:
         try:
             load_model(model_path, model_type)
         except Exception as exc:
             logger.warning(f"Could not load model at startup: {exc}")
+    elif os.path.exists(default_model_path):
+        try:
+            load_model(default_model_path, model_type)
+            logger.info(f"Auto-loaded default model bundle from {default_model_path}")
+        except Exception as exc:
+            logger.warning(f"Could not auto-load default model bundle: {exc}")
     else:
         logger.info("MODEL_PATH not set — starting without a loaded model")
     yield
@@ -123,7 +138,7 @@ app.add_middleware(
 # Model loading helpers
 # ---------------------------------------------------------------------------
 
-def load_model(path: str, model_type: str = "xgboost") -> None:
+def load_model(path: str, model_type: str | None = None) -> None:
     """Load a persisted model into the application state.
 
     Parameters
@@ -132,21 +147,23 @@ def load_model(path: str, model_type: str = "xgboost") -> None:
         File-system path to a pickled model (``.pkl``) or an MLflow run
         directory.
     model_type:
-        ``"xgboost"`` or ``"lstm"``.
+        Optional override for model type (``"xgboost"`` or ``"lstm"``).
     """
     import pickle
 
     with open(path, "rb") as fh:
         payload = pickle.load(fh)
 
+    resolved_model_type = model_type or payload.get("metadata", {}).get("model_type") or "xgboost"
+
     _state["model"] = payload.get("model")
-    _state["model_type"] = model_type
+    _state["model_type"] = resolved_model_type
     _state["feature_names"] = payload.get("feature_names", [])
     _state["feature_scaler"] = payload.get("feature_scaler")
     _state["target_scaler"] = payload.get("target_scaler")
     _state["seq_len"] = payload.get("seq_len", 24)
     _state["metadata"] = payload.get("metadata", {})
-    logger.info(f"Model loaded from {path} (type={model_type})")
+    logger.info(f"Model loaded from {path} (type={resolved_model_type})")
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +213,16 @@ def _run_prediction(features_2d: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+@app.get("/", response_model=RootResponse)
+def root() -> RootResponse:
+    """Basic landing endpoint for browser checks."""
+    return RootResponse(
+        service="crypto-ml API",
+        docs="/docs",
+        health="/health",
+        model_loaded=_state["model"] is not None,
+    )
 
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:

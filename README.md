@@ -54,6 +54,12 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+On macOS, XGBoost may require OpenMP runtime:
+
+```bash
+brew install libomp
+```
+
 ### 2. Fetch historical data (optional)
 
 Set your Binance API credentials (public endpoints work without a key):
@@ -81,6 +87,8 @@ python -m src.training.train --model xgboost --data-path data/raw/BTCUSDT_1h.par
 python -m src.training.train --model lstm --seq-len 24 --data-path data/raw/BTCUSDT_1h.parquet
 ```
 
+Training writes a serving bundle to `artifacts/model_bundle.pkl`.
+
 ### 4. View MLflow experiments
 
 ```bash
@@ -93,6 +101,15 @@ mlflow ui --backend-store-uri mlruns
 ```bash
 uvicorn src.api.app:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+The API auto-loads `artifacts/model_bundle.pkl` if present.
+To load a custom bundle path instead:
+
+```bash
+MODEL_PATH=/absolute/path/to/model_bundle.pkl uvicorn src.api.app:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Open http://localhost:8000/ for a simple service status response.
 
 API docs at **http://localhost:8000/docs**
 
