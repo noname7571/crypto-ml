@@ -22,12 +22,12 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, List, Optional
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
-from loguru import logger
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException, Request, status # type: ignore
+from fastapi.exceptions import RequestValidationError # type: ignore
+from fastapi.middleware.cors import CORSMiddleware # type: ignore
+from fastapi.responses import HTMLResponse, JSONResponse # type: ignore
+from loguru import logger # type: ignore
+from pydantic import BaseModel, Field # type: ignore
 
 # ---------------------------------------------------------------------------
 # In-memory model state (populated on startup via load_model())
@@ -255,7 +255,7 @@ def _run_prediction(features_2d: np.ndarray) -> np.ndarray:
     X = feature_scaler.transform(features_2d) if feature_scaler else features_2d
 
     if model_type == "lstm":
-        import torch
+        import torch # type: ignore
         seq_len = _state["seq_len"]
         if X.shape[0] < seq_len:
             raise HTTPException(
